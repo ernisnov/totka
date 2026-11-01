@@ -1,0 +1,1946 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TRY OUT TKA SMP - SMPN 5 Sajira</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- SheetJS for Excel Import/Export -->
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .exam-radio:checked + div { background-color: #dbeafe; border-color: #3b82f6; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+        // ==========================================
+        // 1. DATABASE LAYER (IndexedDB with Error Boundaries)
+        // ==========================================
+        const DB_NAME = 'TKASMP_DB';
+        const DB_VERSION = 2;
+
+        const dbHelper = {
+            init: () => {
+                return new Promise((resolve, reject) => {
+                    try {
+                        const request = indexedDB.open(DB_NAME, DB_VERSION);
+                        request.onupgradeneeded = (e) => {
+                            const db = e.target.result;
+                            if (!db.objectStoreNames.contains('users')) {
+                                const users = db.createObjectStore('users', { keyPath: 'id' });
+                                users.createIndex('username', 'username', { unique: true });
+                            }
+                            if (!db.objectStoreNames.contains('questions')) {
+                                db.createObjectStore('questions', { keyPath: 'id' });
+                            }
+                            if (!db.objectStoreNames.contains('packages')) {
+                                db.createObjectStore('packages', { keyPath: 'id' });
+                            }
+                            if (!db.objectStoreNames.contains('sessions')) {
+                                db.createObjectStore('sessions', { keyPath: 'id' });
+                            }
+                            if (!db.objectStoreNames.contains('results')) {
+                                db.createObjectStore('results', { keyPath: 'id' });
+                            }
+                        };
+                        request.onsuccess = async (e) => {
+                            const db = e.target.result;
+                            try {
+                                await dbHelper.seedData(db);
+                            } catch (err) {
+                                console.error("Seeding warning:", err);
+                            }
+                            resolve(db);
+                        };
+                        request.onerror = (e) => reject(e.target.error);
+                    } catch (err) {
+                        reject(err);
+                    }
+                });
+            },
+            seedData: (db) => {
+                return new Promise((resolve) => {
+                    const tx = db.transaction('users', 'readwrite');
+                    const store = tx.objectStore('users');
+                    const adminReq = store.get('admin');
+                    adminReq.onsuccess = () => {
+                        if (!adminReq.result) {
+                            store.put({ id: 'admin', username: 'admin', password: btoa('12345'), role: 'admin', name: 'Administrator' });
+                            store.put({ id: 'siswa1', username: 'siswa1', password: btoa('123'), role: 'student', name: 'Ahmad Siswa', nisn: '1001', kelas: 'VII A' });
+                        }
+                    };
+                    
+                    const txPkg = db.transaction('packages', 'readwrite');
+                    const pkgStore = txPkg.objectStore('packages');
+                    const defaultPkgs = [
+                        { id: 'MAT-1', subject: 'Matematika', name: 'Paket 1', duration: 90, active: true },
+                        { id: 'MAT-2', subject: 'Matematika', name: 'Paket 2', duration: 90, active: true },
+                        { id: 'MAT-3', subject: 'Matematika', name: 'Paket 3', duration: 90, active: true },
+                        { id: 'BIN-1', subject: 'Bahasa Indonesia', name: 'Paket 1', duration: 90, active: true },
+                        { id: 'BIN-2', subject: 'Bahasa Indonesia', name: 'Paket 2', duration: 90, active: true },
+                        { id: 'BIN-3', subject: 'Bahasa Indonesia', name: 'Paket 3', duration: 90, active: true }
+                    ];
+                    defaultPkgs.forEach(p => {
+                        pkgStore.get(p.id).onsuccess = (e) => {
+                            if (!e.target.result) pkgStore.put(p);
+                        };
+                    });
+                    tx.oncomplete = () => resolve(true);
+                    tx.onerror = () => resolve(true);
+                });
+            },
+            get: (storeName, id) => {
+                return new Promise(async (resolve) => {
+                    try {
+                        const db = await dbHelper.init();
+                        const tx = db.transaction(storeName, 'readonly');
+                        const req = tx.objectStore(storeName).get(id);
+                        req.onsuccess = () => resolve(req.result);
+                        req.onerror = () => resolve(null);
+                    } catch {
+                        resolve(null);
+                    }
+                });
+            },
+            getAll: (storeName) => {
+                return new Promise(async (resolve) => {
+                    try {
+                        const db = await dbHelper.init();
+                        const tx = db.transaction(storeName, 'readonly');
+                        const req = tx.objectStore(storeName).getAll();
+                        req.onsuccess = () => resolve(req.result || []);
+                        req.onerror = () => resolve([]);
+                    } catch {
+                        resolve([]);
+                    }
+                });
+            },
+            put: (storeName, data) => {
+                return new Promise(async (resolve) => {
+                    try {
+                        const db = await dbHelper.init();
+                        const tx = db.transaction(storeName, 'readwrite');
+                        const req = tx.objectStore(storeName).put(data);
+                        req.onsuccess = () => resolve(true);
+                        req.onerror = () => resolve(false);
+                    } catch {
+                        resolve(false);
+                    }
+                });
+            },
+            delete: (storeName, id) => {
+                return new Promise(async (resolve) => {
+                    try {
+                        const db = await dbHelper.init();
+                        const tx = db.transaction(storeName, 'readwrite');
+                        tx.objectStore(storeName).delete(id);
+                        tx.oncomplete = () => resolve(true);
+                        tx.onerror = () => resolve(false);
+                    } catch {
+                        resolve(false);
+                    }
+                });
+            }
+        };
+
+        // ==========================================
+        // 2. UI COMPONENTS & ICONS
+        // ==========================================
+        const Icons = {
+            School: () => <svg className="w-10 h-10 text-blue-900" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 14l9-5-9-5-9 5 9 5z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 14l6.16-3.422a12.083 12.083 0 01.665 6.479A11.952 11.952 0 0012 20.055a11.952 11.952 0 00-6.824-2.998 12.078 12.078 0 01.665-6.479L12 14z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 14v7"/></svg>,
+            User: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>,
+            Lock: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>,
+            Check: () => <svg className="w-5 h-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"/></svg>,
+            Clock: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>,
+            LogOut: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>,
+            Menu: () => <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16"/></svg>,
+            Upload: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>,
+            Download: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>,
+            Image: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>,
+        };
+
+        const Modal = ({ isOpen, title, children, onClose, maxWidth = 'max-w-md' }) => {
+            if (!isOpen) return null;
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex justify-center items-center p-4">
+                    <div className={`bg-white rounded-xl shadow-xl w-full ${maxWidth} flex flex-col max-h-[95vh]`}>
+                        <div className="bg-blue-900 px-6 py-4 flex justify-between items-center text-white shrink-0 rounded-t-xl">
+                            <h3 className="font-bold">{title}</h3>
+                            <button onClick={onClose} className="text-gray-300 hover:text-white text-2xl leading-none">&times;</button>
+                        </div>
+                        <div className="p-6 overflow-y-auto">
+                            {children}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // ==========================================
+        // 3. MAIN APPLICATION & ROUTING
+        // ==========================================
+        const App = () => {
+            const [user, setUser] = useState(null);
+            const [view, setView] = useState('login');
+            const [examSession, setExamSession] = useState(null);
+
+            useEffect(() => {
+                const checkSession = async () => {
+                    try {
+                        const savedUser = localStorage.getItem('tka_user');
+                        if (savedUser) {
+                            const parsed = JSON.parse(savedUser);
+                            setUser(parsed);
+                            if (parsed.role === 'student') {
+                                const sessions = await dbHelper.getAll('sessions');
+                                const ongoing = sessions.find(s => s.userId === parsed.id && s.status === 'ongoing');
+                                if (ongoing) {
+                                    setExamSession(ongoing);
+                                    setView('exam');
+                                } else {
+                                    setView('student');
+                                }
+                            } else {
+                                setView('admin');
+                            }
+                        }
+                    } catch (e) {
+                        console.error("Session restore error:", e);
+                    }
+                };
+                checkSession();
+            }, []);
+
+            const handleLogin = (userData) => {
+                setUser(userData);
+                localStorage.setItem('tka_user', JSON.stringify(userData));
+                setView(userData.role === 'admin' ? 'admin' : 'student');
+            };
+
+            const handleLogout = () => {
+                setUser(null);
+                setExamSession(null);
+                localStorage.removeItem('tka_user');
+                setView('login');
+            };
+
+            return (
+                <div className="min-h-screen flex flex-col">
+                    {view === 'login' && <LoginView onLogin={handleLogin} />}
+                    {view === 'admin' && <AdminView user={user} onLogout={handleLogout} />}
+                    {view === 'student' && <StudentView user={user} onLogout={handleLogout} onStartExam={(session) => { setExamSession(session); setView('exam'); }} />}
+                    {view === 'exam' && <ExamView user={user} session={examSession} onFinish={() => setView('result')} />}
+                    {view === 'result' && <ResultView user={user} onBack={() => setView('student')} />}
+                </div>
+            );
+        };
+
+        // ==========================================
+        // 4. LOGIN VIEW
+        // ==========================================
+        const LoginView = ({ onLogin }) => {
+            const [username, setUsername] = useState('');
+            const [password, setPassword] = useState('');
+            const [error, setError] = useState('');
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                setError('');
+                try {
+                    const users = await dbHelper.getAll('users');
+                    const user = users.find(u => u.username === username && u.password === btoa(password));
+                    if (user) {
+                        onLogin(user);
+                    } else {
+                        setError('Username atau password salah.');
+                    }
+                } catch {
+                    setError('Terjadi kesalahan pada database lokal.');
+                }
+            };
+
+            return (
+                <div className="flex-1 flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-50 p-4">
+                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden border border-gray-100">
+                        <div className="bg-blue-900 p-8 text-center text-white relative overflow-hidden">
+                            <div className="absolute -right-10 -top-10 w-32 h-32 bg-blue-800 rounded-full opacity-50 pointer-events-none"></div>
+                            <div className="w-16 h-16 bg-blue-800 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-inner border border-blue-700">
+                                <Icons.School />
+                            </div>
+                            <h1 className="text-2xl font-bold tracking-wider">TRY OUT TKA SMP</h1>
+                            <p className="text-blue-200 text-xs tracking-widest mt-1 font-medium uppercase">Tes Kemampuan Akademik</p>
+                            <p className="font-semibold text-sm mt-2 text-blue-100">SMP NEGERI 5 SAJIRA</p>
+                        </div>
+                        
+                        <div className="p-8">
+                            {error && <div className="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-4 text-sm font-medium">{error}</div>}
+                            <form onSubmit={handleSubmit} className="space-y-5">
+                                <div>
+                                    <label className="block text-sm font-semibold text-gray-700 mb-1">Username</label>
+                                    <div className="relative">
+                                        <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-gray-400"><Icons.User /></div>
+                                        <input type="text" required value={username} onChange={e => setUsername(e.target.value)} className="pl-11 w-full rounded-xl border-gray-200 bg-gray-50 border px-4 py-3 text-gray-800 focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition" placeholder="Masukkan Username" />
+                                    </div>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-semibold text-gray-700 mb-1">Password</label>
+                                    <div className="relative">
+                                        <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-gray-400"><Icons.Lock /></div>
+                                        <input type="password" required value={password} onChange={e => setPassword(e.target.value)} className="pl-11 w-full rounded-xl border-gray-200 bg-gray-50 border px-4 py-3 text-gray-800 focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition" placeholder="Masukkan Password" />
+                                    </div>
+                                </div>
+                                <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 px-4 rounded-xl shadow-lg shadow-blue-600/20 transition duration-200">
+                                    MASUK SEKARANG
+                                </button>
+                            </form>
+                            <div className="mt-6 text-center">
+                                <span className="inline-flex items-center text-xs font-semibold text-emerald-600 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-100">
+                                    <span className="w-2 h-2 mr-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
+                                    Server Lokal Terhubung
+                                </span>
+                            </div>
+                        </div>
+                        <div className="bg-gray-50 py-4 text-center text-xs text-gray-500 border-t border-gray-100">
+                            &copy; {new Date().getFullYear()} SMP Negeri 5 Sajira. All rights reserved.
+                            <span className="block mt-1 font-medium text-gray-600">Dikembangkan oleh: Ernis Novitasari, S.Pd</span>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // ==========================================
+        // 5. STUDENT VIEW (Dashboard)
+        // ==========================================
+        const StudentView = ({ user, onLogout, onStartExam }) => {
+            const [packages, setPackages] = useState([]);
+            const [selectedSubject, setSelectedSubject] = useState(null);
+            const [infoModal, setInfoModal] = useState('');
+            
+            useEffect(() => {
+                const loadData = async () => {
+                    const pkgs = await dbHelper.getAll('packages');
+                    setPackages(pkgs.filter(p => p.active));
+                };
+                loadData();
+            }, []);
+
+            const subjects = useMemo(() => [...new Set(packages.map(p => p.subject))], [packages]);
+
+            const startExam = async (pkg) => {
+                const results = await dbHelper.getAll('results');
+                if (results.find(r => r.userId === user.id && r.packageId === pkg.id)) {
+                    setInfoModal("Anda sudah mengerjakan paket ini.");
+                    return;
+                }
+
+                const questions = (await dbHelper.getAll('questions')).filter(q => q.packageId === pkg.id);
+                if (questions.length === 0) {
+                    setInfoModal("Paket soal masih kosong.");
+                    return;
+                }
+
+                const session = {
+                    id: 'sess_' + Date.now(),
+                    userId: user.id,
+                    packageId: pkg.id,
+                    startTime: Date.now(),
+                    duration: pkg.duration * 60,
+                    answers: {},
+                    ragu: {},
+                    status: 'ongoing'
+                };
+                await dbHelper.put('sessions', session);
+                onStartExam(session);
+            };
+
+            return (
+                <div className="flex-1 bg-gray-50 flex flex-col">
+                    <header className="bg-blue-900 text-white shadow-md p-4 flex justify-between items-center">
+                        <div className="flex items-center space-x-3">
+                            <Icons.School />
+                            <div>
+                                <h1 className="font-bold text-lg hidden sm:block">TKA SMP NEGERI 5 SAJIRA</h1>
+                                <h1 className="font-bold text-lg sm:hidden">TKA SMP</h1>
+                            </div>
+                        </div>
+                        <div className="flex items-center space-x-4">
+                            <div className="text-right hidden sm:block">
+                                <div className="text-sm font-semibold">{user.name}</div>
+                                <div className="text-xs text-blue-200">{user.kelas} | {user.nisn}</div>
+                            </div>
+                            <button onClick={onLogout} className="bg-red-500 hover:bg-red-600 p-2 rounded-full transition" title="Keluar">
+                                <Icons.LogOut />
+                            </button>
+                        </div>
+                    </header>
+
+                    <main className="flex-1 p-4 sm:p-8 max-w-5xl mx-auto w-full">
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-8">
+                            <h2 className="text-xl font-bold text-gray-800 mb-2">Selamat Datang, {user.name}</h2>
+                            <p className="text-gray-600 text-sm">Pilih mata pelajaran dan paket soal untuk memulai Tes Kemampuan Akademik.</p>
+                        </div>
+
+                        {!selectedSubject ? (
+                            <div>
+                                <h3 className="text-lg font-semibold text-gray-700 mb-4">Pilih Mata Pelajaran</h3>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                    {subjects.map(subj => (
+                                        <div key={subj} onClick={() => setSelectedSubject(subj)} className="bg-white border-2 border-blue-100 rounded-xl p-6 cursor-pointer hover:border-blue-500 hover:shadow-md transition group">
+                                            <h4 className="text-xl font-bold text-blue-900 group-hover:text-blue-600">{subj}</h4>
+                                            <p className="text-sm text-gray-500 mt-2">{packages.filter(p => p.subject === subj).length} Paket Tersedia</p>
+                                        </div>
+                                    ))}
+                                    {subjects.length === 0 && <p className="text-gray-500 italic">Belum ada ujian yang aktif.</p>}
+                                </div>
+                            </div>
+                        ) : (
+                            <div>
+                                <div className="flex items-center mb-4 space-x-2">
+                                    <button onClick={() => setSelectedSubject(null)} className="text-blue-600 hover:underline text-sm font-medium">&larr; Kembali</button>
+                                    <span className="text-gray-400">/</span>
+                                    <h3 className="text-lg font-semibold text-gray-700">{selectedSubject}</h3>
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    {packages.filter(p => p.subject === selectedSubject).map(pkg => (
+                                        <div key={pkg.id} className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm flex flex-col h-full">
+                                            <div className="flex-1">
+                                                <h4 className="text-lg font-bold text-gray-800">{pkg.name}</h4>
+                                                <div className="mt-3 space-y-2 text-sm text-gray-600">
+                                                    <div className="flex items-center"><Icons.Clock /><span className="ml-2">{pkg.duration} Menit</span></div>
+                                                </div>
+                                            </div>
+                                            <button onClick={() => startExam(pkg)} className="mt-6 w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition">
+                                                Mulai Ujian
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </main>
+
+                    <Modal isOpen={!!infoModal} title="Informasi" onClose={() => setInfoModal('')}>
+                        <div className="text-center space-y-4">
+                            <p className="text-gray-700 font-medium">{infoModal}</p>
+                            <button onClick={() => setInfoModal('')} className="w-full py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition">Tutup</button>
+                        </div>
+                    </Modal>
+                </div>
+            );
+        };
+
+        // ==========================================
+        // 6. EXAM ENGINE (Core CBT Engine)
+        // ==========================================
+        const ExamView = ({ user, session, onFinish }) => {
+            const [questions, setQuestions] = useState([]);
+            const [currIndex, setCurrIndex] = useState(0);
+            const [answers, setAnswers] = useState(session.answers || {});
+            const [ragu, setRagu] = useState(session.ragu || {});
+            const [timeLeft, setTimeLeft] = useState(0);
+            const [showConfirm, setShowConfirm] = useState(false);
+            const [isMenuOpen, setIsMenuOpen] = useState(false);
+
+            useEffect(() => {
+                const loadQ = async () => {
+                    let qs = await dbHelper.getAll('questions');
+                    qs = qs.filter(q => q.packageId === session.packageId);
+                    setQuestions(qs);
+                };
+                loadQ();
+                
+                const now = Math.floor(Date.now() / 1000);
+                const start = Math.floor(session.startTime / 1000);
+                const elapsed = now - start;
+                const remaining = Math.max(0, session.duration - elapsed);
+                setTimeLeft(remaining);
+            }, [session]);
+
+            useEffect(() => {
+                if (timeLeft <= 0 && questions.length > 0) {
+                    submitExam();
+                    return;
+                }
+                const timer = setInterval(() => setTimeLeft(t => Math.max(0, t - 1)), 1000);
+                return () => clearInterval(timer);
+            }, [timeLeft, questions.length]);
+
+            useEffect(() => {
+                const save = async () => {
+                    const updatedSession = { ...session, answers, ragu };
+                    await dbHelper.put('sessions', updatedSession);
+                };
+                save();
+            }, [answers, ragu]);
+
+            const formatTime = (seconds) => {
+                const h = Math.floor(seconds / 3600);
+                const m = Math.floor((seconds % 3600) / 60);
+                const s = seconds % 60;
+                return `${h > 0 ? h+':' : ''}${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+            };
+
+            const handleAnswer = useCallback((qId, answerData) => {
+                setAnswers(prev => ({ ...prev, [qId]: answerData }));
+            }, []);
+
+            const toggleRagu = useCallback((qId) => {
+                setRagu(prev => ({ ...prev, [qId]: !prev[qId] }));
+            }, []);
+
+            const gradeExam = (qs, ans) => {
+                let totalScore = 0;
+                let maxScore = 0;
+                
+                qs.forEach(q => {
+                    const bobot = parseInt(q.bobot) || 10;
+                    maxScore += bobot;
+                    const userAnswer = ans[q.id];
+                    if (!userAnswer) return;
+
+                    if (q.type === 'PG') {
+                        if (userAnswer === q.answer) totalScore += bobot;
+                    } 
+                    else if (q.type === 'PGK') {
+                        const correctAnswers = q.answer || [];
+                        const userAnswers = userAnswer || [];
+                        if (correctAnswers.length === userAnswers.length && correctAnswers.every(v => userAnswers.includes(v))) {
+                            totalScore += bobot;
+                        }
+                    }
+                    else if (q.type === 'BS') {
+                        const correctObj = q.answer || {};
+                        const userObj = userAnswer || {};
+                        const stmts = Object.keys(correctObj);
+                        if (stmts.length > 0) {
+                            let correctCount = 0;
+                            stmts.forEach(s => { if (userObj[s] === correctObj[s]) correctCount++; });
+                            totalScore += (correctCount / stmts.length) * bobot;
+                        }
+                    }
+                    else if (q.type === 'JODOH') {
+                        const correctObj = q.answer || {};
+                        const userObj = userAnswer || {};
+                        const leftItems = Object.keys(correctObj);
+                        if (leftItems.length > 0) {
+                            let correctCount = 0;
+                            leftItems.forEach(l => { if (userObj[l] === correctObj[l]) correctCount++; });
+                            totalScore += (correctCount / leftItems.length) * bobot;
+                        }
+                    }
+                    else if (q.type === 'ISIAN') {
+                        const correctVars = (q.answer || []).map(a => String(a).toLowerCase().trim());
+                        const userVal = String(userAnswer || '').toLowerCase().trim();
+                        if (correctVars.includes(userVal)) {
+                            totalScore += bobot;
+                        }
+                    }
+                });
+
+                return maxScore === 0 ? 0 : Math.round((totalScore / maxScore) * 100);
+            };
+
+            const submitExam = async () => {
+                const finalScore = gradeExam(questions, answers);
+                const result = {
+                    id: 'res_' + Date.now(),
+                    userId: user.id,
+                    userName: user.name,
+                    nisn: user.nisn,
+                    kelas: user.kelas,
+                    packageId: session.packageId,
+                    startTime: session.startTime,
+                    endTime: Date.now(),
+                    durationSecs: session.duration - timeLeft,
+                    answers: answers,
+                    score: finalScore,
+                    date: new Date().toISOString()
+                };
+                await dbHelper.put('results', result);
+                await dbHelper.delete('sessions', session.id);
+                onFinish();
+            };
+
+            if (questions.length === 0) return <div className="p-8 text-center font-medium">Memuat soal ujian...</div>;
+
+            const q = questions[currIndex];
+            const answeredCount = Object.keys(answers).filter(k => {
+                const a = answers[k];
+                if (Array.isArray(a)) return a.length > 0;
+                if (typeof a === 'object') return Object.keys(a).length > 0;
+                return a !== undefined && a !== null && a !== '';
+            }).length;
+
+            return (
+                <div className="h-screen flex flex-col bg-gray-100 overflow-hidden">
+                    <div className="bg-blue-900 text-white h-16 flex items-center justify-between px-4 sm:px-6 shrink-0 shadow-md z-10">
+                        <div className="flex items-center space-x-3">
+                            <Icons.School />
+                            <div className="hidden sm:block font-bold">TKA - {user.name}</div>
+                        </div>
+                        <div className="flex items-center space-x-4">
+                            <div className={`px-4 py-1.5 rounded-full font-mono text-lg font-bold shadow-inner ${timeLeft < 300 ? 'bg-red-600 animate-pulse' : 'bg-blue-800'}`}>
+                                {formatTime(timeLeft)}
+                            </div>
+                            <button className="sm:hidden p-2" onClick={() => setIsMenuOpen(!isMenuOpen)}><Icons.Menu /></button>
+                        </div>
+                    </div>
+
+                    <div className="flex-1 flex overflow-hidden relative">
+                        <div className="flex-1 flex flex-col p-4 sm:p-6 overflow-y-auto">
+                            <div className="bg-white rounded-xl shadow p-6 mb-20">
+                                <div className="flex justify-between items-center mb-6 border-b pb-4">
+                                    <h2 className="text-xl font-bold text-gray-800">Soal No. {currIndex + 1}</h2>
+                                    <span className="text-sm font-semibold bg-gray-100 text-gray-600 px-3 py-1 rounded">Bobot: {q.bobot || 10}</span>
+                                </div>
+                                
+                                {q.image && <img src={q.image} className="max-w-full h-auto max-h-64 object-contain mb-4 rounded border p-1" alt="Ilustrasi Soal" />}
+                                <div className="prose max-w-none text-lg text-gray-800 mb-8" dangerouslySetInnerHTML={{__html: q.text}} />
+                                
+                                <div className="space-y-4">
+                                    {q.type === 'PG' && (q.options || []).map((opt, i) => {
+                                        const isChecked = answers[q.id] === opt;
+                                        const optImg = (q.optionImages || [])[i];
+                                        return (
+                                            <label key={i} className="flex flex-col sm:flex-row items-start p-4 border rounded-lg cursor-pointer hover:bg-gray-50 transition relative">
+                                                <div className="flex items-center w-full">
+                                                    <input type="radio" name={`q_${q.id}`} className="exam-radio opacity-0 absolute w-0 h-0" checked={isChecked} onChange={() => handleAnswer(q.id, opt)} />
+                                                    <div className="w-6 h-6 border-2 rounded-full mr-4 flex-shrink-0 flex items-center justify-center">
+                                                        {isChecked && <div className="w-3 h-3 bg-blue-600 rounded-full" />}
+                                                    </div>
+                                                    <div className="flex-1 pt-0.5">
+                                                        <div dangerouslySetInnerHTML={{__html: opt}} />
+                                                        {optImg && <img src={optImg} className="h-24 object-contain mt-2 border rounded bg-white p-1" alt="Opsi Gambar" />}
+                                                    </div>
+                                                </div>
+                                            </label>
+                                        );
+                                    })}
+
+                                    {q.type === 'PGK' && (q.options || []).map((opt, i) => {
+                                        const currentAns = answers[q.id] || [];
+                                        const isChecked = currentAns.includes(opt);
+                                        const optImg = (q.optionImages || [])[i];
+                                        return (
+                                            <label key={i} className="flex items-start p-4 border rounded-lg cursor-pointer hover:bg-gray-50 transition relative">
+                                                <input type="checkbox" className="exam-radio opacity-0 absolute w-0 h-0" checked={isChecked} onChange={() => {
+                                                    let newAns = [...currentAns];
+                                                    if (isChecked) newAns = newAns.filter(a => a !== opt);
+                                                    else newAns.push(opt);
+                                                    handleAnswer(q.id, newAns);
+                                                }} />
+                                                <div className={`w-6 h-6 border-2 rounded mr-4 flex-shrink-0 flex items-center justify-center mt-0.5 ${isChecked ? 'bg-blue-600 border-blue-600 text-white' : ''}`}>
+                                                    {isChecked && <Icons.Check />}
+                                                </div>
+                                                <div className="flex-1 pt-0.5">
+                                                    <div dangerouslySetInnerHTML={{__html: opt}} />
+                                                    {optImg && <img src={optImg} className="h-24 object-contain mt-2 border rounded bg-white p-1" alt="Opsi Gambar" />}
+                                                </div>
+                                            </label>
+                                        );
+                                    })}
+
+                                    {q.type === 'BS' && (
+                                        <table className="w-full text-left border-collapse">
+                                            <thead><tr className="bg-gray-100"><th className="p-3 border">Pernyataan</th><th className="p-3 border text-center w-24">Benar</th><th className="p-3 border text-center w-24">Salah</th></tr></thead>
+                                            <tbody>
+                                                {(q.options || []).map((stmt, i) => {
+                                                    const currentObj = answers[q.id] || {};
+                                                    const stmtImg = (q.optionImages || [])[i];
+                                                    return (
+                                                        <tr key={i}>
+                                                            <td className="p-3 border">
+                                                                <div dangerouslySetInnerHTML={{__html: stmt}} />
+                                                                {stmtImg && <img src={stmtImg} className="h-20 object-contain mt-2 border rounded bg-white p-1" alt="Pernyataan Gambar" />}
+                                                            </td>
+                                                            <td className="p-3 border text-center"><input type="radio" name={`bs_${q.id}_${i}`} className="w-5 h-5 cursor-pointer accent-blue-600" checked={currentObj[stmt] === 'B'} onChange={() => handleAnswer(q.id, {...currentObj, [stmt]: 'B'})} /></td>
+                                                            <td className="p-3 border text-center"><input type="radio" name={`bs_${q.id}_${i}`} className="w-5 h-5 cursor-pointer accent-blue-600" checked={currentObj[stmt] === 'S'} onChange={() => handleAnswer(q.id, {...currentObj, [stmt]: 'S'})} /></td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    )}
+
+                                    {q.type === 'JODOH' && (
+                                        <div className="space-y-4">
+                                            {(q.options?.left || []).map((leftItem, i) => {
+                                                const currentObj = answers[q.id] || {};
+                                                return (
+                                                    <div key={i} className="flex flex-col sm:flex-row sm:items-center gap-4 p-3 border rounded-lg bg-gray-50">
+                                                        <div className="flex-1 font-medium" dangerouslySetInnerHTML={{__html: leftItem}} />
+                                                        <select className="flex-1 p-2 border rounded border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500" value={currentObj[leftItem] || ''} onChange={(e) => handleAnswer(q.id, {...currentObj, [leftItem]: e.target.value})}>
+                                                            <option value="" disabled>-- Pilih Pasangan --</option>
+                                                            {(q.options?.right || []).map((rightItem, j) => (
+                                                                <option key={j} value={rightItem}>{rightItem}</option>
+                                                            ))}
+                                                        </select>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+
+                                    {q.type === 'ISIAN' && (
+                                        <div>
+                                            <input type="text" className="w-full p-4 border rounded-lg border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 text-lg" placeholder="Ketik jawaban Anda di sini..." value={answers[q.id] || ''} onChange={(e) => handleAnswer(q.id, e.target.value)} />
+                                            <p className="text-xs text-gray-500 mt-2">Jawab dengan singkat dan jelas.</p>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className={`${isMenuOpen ? 'translate-x-0' : 'translate-x-full'} sm:translate-x-0 fixed sm:static right-0 top-16 bottom-0 w-72 bg-white shadow-xl sm:shadow-none border-l transition-transform duration-300 z-20 flex flex-col`}>
+                            <div className="p-4 border-b bg-gray-50 flex justify-between items-center">
+                                <h3 className="font-bold text-gray-700">Navigasi Soal</h3>
+                                <button className="sm:hidden text-gray-500" onClick={() => setIsMenuOpen(false)}>&times;</button>
+                            </div>
+                            <div className="p-4 flex-1 overflow-y-auto">
+                                <div className="grid grid-cols-5 gap-2">
+                                    {questions.map((qs, i) => {
+                                        let statusClass = "bg-white border-gray-300 text-gray-700 hover:bg-gray-100";
+                                        const isAns = answers[qs.id] && (Array.isArray(answers[qs.id]) ? answers[qs.id].length > 0 : (typeof answers[qs.id] === 'object' ? Object.keys(answers[qs.id]).length > 0 : true));
+                                        
+                                        if (currIndex === i) statusClass = "bg-blue-100 border-blue-500 text-blue-800 ring-2 ring-blue-300";
+                                        else if (ragu[qs.id]) statusClass = "bg-orange-400 border-orange-500 text-white";
+                                        else if (isAns) statusClass = "bg-green-500 border-green-600 text-white";
+
+                                        return (
+                                            <button key={qs.id} onClick={() => setCurrIndex(i)} className={`h-10 w-10 border rounded text-sm font-semibold flex items-center justify-center transition-colors ${statusClass}`}>
+                                                {i + 1}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                                <div className="mt-8 space-y-2 text-xs text-gray-600">
+                                    <div className="flex items-center"><div className="w-3 h-3 bg-green-500 rounded mr-2"></div> Sudah Dijawab</div>
+                                    <div className="flex items-center"><div className="w-3 h-3 bg-orange-400 rounded mr-2"></div> Ragu-ragu</div>
+                                    <div className="flex items-center"><div className="w-3 h-3 bg-white border border-gray-300 rounded mr-2"></div> Belum Dijawab</div>
+                                </div>
+                            </div>
+                            <div className="p-4 border-t bg-gray-50">
+                                <button onClick={() => setShowConfirm(true)} className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-lg shadow transition">
+                                    SELESAI UJIAN
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="fixed bottom-0 left-0 right-0 sm:right-72 h-16 bg-white border-t flex justify-between items-center px-4 sm:px-6 z-10 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
+                        <button onClick={() => setCurrIndex(prev => Math.max(0, prev - 1))} disabled={currIndex === 0} className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-100 disabled:opacity-50">
+                            &larr; Sebelumnya
+                        </button>
+                        <label className="flex items-center cursor-pointer select-none px-4 py-2 rounded-lg hover:bg-orange-50 text-orange-600 font-semibold transition">
+                            <input type="checkbox" className="mr-2 w-5 h-5 accent-orange-500" checked={!!ragu[q.id]} onChange={() => toggleRagu(q.id)} />
+                            RAGU-RAGU
+                        </label>
+                        <button onClick={() => setCurrIndex(prev => Math.min(questions.length - 1, prev + 1))} disabled={currIndex === questions.length - 1} className="px-4 py-2 bg-blue-600 rounded-lg text-white font-medium hover:bg-blue-700 disabled:opacity-50 transition">
+                            Selanjutnya &rarr;
+                        </button>
+                    </div>
+
+                    <Modal isOpen={showConfirm} title="Konfirmasi Selesai" onClose={() => setShowConfirm(false)}>
+                        <div className="text-center">
+                            <h4 className="text-lg font-bold mb-2">Apakah Anda yakin ingin mengakhiri ujian?</h4>
+                            <p className="text-gray-600 mb-6">
+                                Anda telah menjawab <span className="font-bold text-green-600">{answeredCount}</span> dari <span className="font-bold">{questions.length}</span> soal.
+                                {answeredCount < questions.length && <span className="block mt-2 text-red-500">Ada {questions.length - answeredCount} soal yang belum dijawab!</span>}
+                            </p>
+                            <div className="flex gap-4">
+                                <button onClick={() => setShowConfirm(false)} className="flex-1 py-2 border rounded text-gray-700 font-semibold hover:bg-gray-50">Batal</button>
+                                <button onClick={submitExam} className="flex-1 py-2 bg-blue-600 text-white font-bold rounded hover:bg-blue-700">Ya, Selesai</button>
+                            </div>
+                        </div>
+                    </Modal>
+                </div>
+            );
+        };
+
+        // ==========================================
+        // 7. RESULT VIEW
+        // ==========================================
+        const ResultView = ({ user, onBack }) => {
+            const [result, setResult] = useState(null);
+
+            useEffect(() => {
+                const fetchRes = async () => {
+                    const results = await dbHelper.getAll('results');
+                    const myResults = results.filter(r => r.userId === user.id);
+                    if (myResults.length > 0) {
+                        setResult(myResults[myResults.length - 1]);
+                    }
+                };
+                fetchRes();
+            }, [user]);
+
+            if (!result) return <div className="p-8 text-center font-medium">Memuat hasil...</div>;
+
+            return (
+                <div className="flex-1 flex flex-col items-center justify-center bg-gray-50 p-4">
+                    <div className="bg-white p-8 rounded-2xl shadow-lg w-full max-w-md text-center border-t-8 border-green-500">
+                        <div className="w-20 h-20 bg-green-100 text-green-500 rounded-full flex items-center justify-center mx-auto mb-4">
+                            <Icons.Check />
+                        </div>
+                        <h1 className="text-2xl font-bold text-gray-800 mb-2">UJIAN TELAH SELESAI</h1>
+                        <p className="text-gray-500 mb-6">Terima kasih telah mengikuti TKA.</p>
+                        
+                        <div className="bg-gray-50 rounded-lg p-4 text-left space-y-3 mb-8">
+                            <div className="flex justify-between border-b pb-2"><span className="text-gray-500">Nama Peserta</span><span className="font-semibold">{result.userName}</span></div>
+                            <div className="flex justify-between border-b pb-2"><span className="text-gray-500">NISN</span><span className="font-semibold">{result.nisn}</span></div>
+                            <div className="flex justify-between border-b pb-2"><span className="text-gray-500">Nilai Akhir</span><span className="font-bold text-blue-600 text-lg">{result.score}</span></div>
+                            <div className="flex justify-between"><span className="text-gray-500">Status</span><span className="font-semibold text-green-600">Berhasil Dikumpulkan</span></div>
+                        </div>
+
+                        <button onClick={onBack} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition">
+                            Kembali ke Dashboard
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+        // ==========================================
+        // 8. ADMIN DASHBOARD
+        // ==========================================
+        const AdminView = ({ user, onLogout }) => {
+            const [activeTab, setActiveTab] = useState('dashboard');
+            return (
+                <div className="flex h-screen bg-gray-100 overflow-hidden">
+                    <div className="w-64 bg-blue-900 text-white flex flex-col shadow-xl z-20 shrink-0">
+                        <div className="p-4 border-b border-blue-800 flex items-center space-x-3">
+                            <Icons.School />
+                            <div>
+                                <div className="font-bold">Admin TKA</div>
+                                <div className="text-xs text-blue-300">SMPN 5 Sajira</div>
+                            </div>
+                        </div>
+                        <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
+                            {['dashboard', 'peserta', 'bank_soal', 'hasil'].map(tab => (
+                                <button key={tab} onClick={() => setActiveTab(tab)} className={`w-full flex items-center p-3 rounded-lg text-sm font-medium capitalize ${activeTab === tab ? 'bg-blue-800 text-white shadow' : 'text-blue-200 hover:bg-blue-800 hover:text-white'}`}>
+                                    {tab.replace('_', ' ')}
+                                </button>
+                            ))}
+                        </nav>
+                        <div className="p-4 border-t border-blue-800">
+                            <button onClick={onLogout} className="w-full flex items-center justify-center p-2 rounded bg-red-600 hover:bg-red-700 text-sm font-semibold">
+                                <Icons.LogOut /><span className="ml-2">Logout</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div className="flex-1 overflow-y-auto">
+                        <div className="p-6 sm:p-10">
+                            {activeTab === 'dashboard' && <AdminHome />}
+                            {activeTab === 'peserta' && <AdminPeserta />}
+                            {activeTab === 'bank_soal' && <AdminBankSoal />}
+                            {activeTab === 'hasil' && <AdminHasil />}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const AdminHome = () => {
+            const [stats, setStats] = useState({ users: 0, pkgs: 0, qs: 0, res: 0 });
+            useEffect(() => {
+                const load = async () => {
+                    const [u, p, q, r] = await Promise.all([dbHelper.getAll('users'), dbHelper.getAll('packages'), dbHelper.getAll('questions'), dbHelper.getAll('results')]);
+                    setStats({ users: u.filter(x=>x.role==='student').length, pkgs: p.length, qs: q.length, res: r.length });
+                };
+                load();
+            }, []);
+            return (
+                <div>
+                    <h2 className="text-2xl font-bold text-gray-800 mb-6">Dashboard Administrator</h2>
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                        {Object.entries({ 'Total Peserta': stats.users, 'Paket Soal': stats.pkgs, 'Total Soal': stats.qs, 'Sesi Selesai': stats.res }).map(([k, v], i) => (
+                            <div key={i} className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-blue-500">
+                                <p className="text-sm text-gray-500 font-semibold mb-1">{k}</p>
+                                <p className="text-3xl font-bold text-gray-800">{v}</p>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        const processWorkbook = (data, isBinary = true) => {
+            const workbook = XLSX.read(data, { type: isBinary ? 'binary' : 'array' });
+            return XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+        };
+
+        const AdminPeserta = () => {
+            const [users, setUsers] = useState([]);
+            const [showModal, setShowModal] = useState(false);
+            const [showExcelModal, setShowExcelModal] = useState(false);
+            const [editingUser, setEditingUser] = useState(null);
+            const [userToDelete, setUserToDelete] = useState(null);
+            const [infoMessage, setInfoMessage] = useState('');
+            const [name, setName] = useState('');
+            const [username, setUsername] = useState('');
+            const [password, setPassword] = useState('');
+            const [nisn, setNisn] = useState('');
+            const [kelas, setKelas] = useState('');
+            const [uploadTargetUrl, setUploadTargetUrl] = useState('');
+            const [isLoadingUrl, setIsLoadingUrl] = useState(false);
+
+            useEffect(() => { load() }, []);
+            const load = async () => setUsers((await dbHelper.getAll('users')).filter(u => u.role === 'student'));
+            
+            const openAddModal = () => {
+                setEditingUser(null);
+                setName(''); setUsername(''); setPassword('123'); setNisn(''); setKelas('VII A');
+                setShowModal(true);
+            };
+
+            const openEditModal = (u) => {
+                setEditingUser(u);
+                setName(u.name); setUsername(u.username); setPassword(''); setNisn(u.nisn); setKelas(u.kelas);
+                setShowModal(true);
+            };
+
+            const handleSaveUser = async (e) => {
+                e.preventDefault();
+                if (editingUser) {
+                    await dbHelper.put('users', { ...editingUser, name, username, nisn, kelas, ...(password ? { password: btoa(password) } : {}) });
+                } else {
+                    await dbHelper.put('users', { id: 'siswa_' + Date.now(), username, password: btoa(password || '123'), role: 'student', name, nisn, kelas });
+                }
+                setShowModal(false);
+                load();
+            };
+
+            const executeDeleteUser = async () => {
+                if (userToDelete) {
+                    await dbHelper.delete('users', userToDelete.id);
+                    setUserToDelete(null);
+                    load();
+                }
+            };
+
+            const processStudentData = async (data) => {
+                let count = 0;
+                for (let row of data) {
+                    if (!row.Nama || !row.Username) continue;
+                    await dbHelper.put('users', {
+                        id: 'siswa_' + Date.now() + Math.random().toString(36).substr(2, 4),
+                        username: String(row.Username),
+                        password: btoa(String(row.Password || '123')),
+                        role: 'student',
+                        name: String(row.Nama),
+                        nisn: String(row.NISN || ''),
+                        kelas: String(row.Kelas || 'VII')
+                    });
+                    count++;
+                }
+                setInfoMessage(`Berhasil mengimpor ${count} peserta.`);
+                setShowExcelModal(false);
+                setUploadTargetUrl('');
+                load();
+            };
+
+            const handleExcelUpload = async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = async (evt) => {
+                    try {
+                        const data = processWorkbook(evt.target.result, true);
+                        await processStudentData(data);
+                    } catch (err) {
+                        console.error(err);
+                        setInfoMessage("Gagal membaca file Excel/CSV peserta.");
+                    }
+                };
+                reader.readAsBinaryString(file);
+            };
+
+            const handleUrlImport = async () => {
+                if (!uploadTargetUrl) {
+                    setInfoMessage("Masukkan URL file terlebih dahulu.");
+                    return;
+                }
+                setIsLoadingUrl(true);
+                try {
+                    const response = await fetch(uploadTargetUrl);
+                    if (!response.ok) throw new Error("Network response was not ok");
+                    const arrayBuffer = await response.arrayBuffer();
+                    const data = processWorkbook(arrayBuffer, false);
+                    await processStudentData(data);
+                } catch (error) {
+                    console.error(error);
+                    setInfoMessage("Gagal menarik data dari URL. Pastikan link adalah file raw Excel/CSV dan mengizinkan akses CORS.");
+                } finally {
+                    setIsLoadingUrl(false);
+                }
+            };
+
+            const downloadTemplate = () => {
+                const templateData = [
+                    { Nama: 'Ahmad Siswa', Username: 'siswa1', Password: '123', NISN: '1001', Kelas: 'VII A' },
+                    { Nama: 'Budi Santoso', Username: 'siswa2', Password: '123', NISN: '1002', Kelas: 'VII B' }
+                ];
+                const ws = XLSX.utils.json_to_sheet(templateData);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Template_Peserta");
+                XLSX.writeFile(wb, "Template_Import_Peserta.xlsx");
+            };
+
+            return (
+                <div className="bg-white rounded-xl shadow-sm border p-6">
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+                        <h3 className="text-lg font-bold text-gray-800">Manajemen Peserta</h3>
+                        <div className="flex flex-wrap gap-2">
+                            <button onClick={() => setShowExcelModal(true)} className="bg-green-600 text-white px-4 py-2 rounded text-sm font-medium hover:bg-green-700 flex items-center">
+                                <Icons.Upload /><span className="ml-2">Import Excel</span>
+                            </button>
+                            <button onClick={openAddModal} className="bg-blue-600 text-white px-4 py-2 rounded text-sm font-medium hover:bg-blue-700">
+                                + Tambah Peserta
+                            </button>
+                        </div>
+                    </div>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left text-sm">
+                            <thead className="bg-gray-50 border-b">
+                                <tr>
+                                    <th className="p-3">Nama Peserta</th>
+                                    <th className="p-3">Username</th>
+                                    <th className="p-3">NISN</th>
+                                    <th className="p-3">Kelas</th>
+                                    <th className="p-3 text-center">Aksi</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {users.map(u => (
+                                    <tr key={u.id} className="border-b hover:bg-gray-50">
+                                        <td className="p-3 font-medium">{u.name}</td>
+                                        <td className="p-3 text-gray-500 font-mono">{u.username}</td>
+                                        <td className="p-3">{u.nisn}</td>
+                                        <td className="p-3">{u.kelas}</td>
+                                        <td className="p-3 text-center space-x-2">
+                                            <button onClick={() => openEditModal(u)} className="text-blue-600 hover:underline font-medium">Edit</button>
+                                            <button onClick={() => setUserToDelete(u)} className="text-red-600 hover:underline font-medium">Hapus</button>
+                                        </td>
+                                    </tr>
+                                ))}
+                                {users.length === 0 && <tr><td colSpan="5" className="p-4 text-center text-gray-500">Belum ada peserta.</td></tr>}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <Modal isOpen={showModal} title={editingUser ? "Edit Peserta" : "Tambah Peserta"} onClose={() => setShowModal(false)}>
+                        <form onSubmit={handleSaveUser} className="space-y-4">
+                            <div><label className="block text-sm font-medium mb-1">Nama Lengkap</label><input type="text" required className="w-full border p-2 rounded" value={name} onChange={e => setName(e.target.value)} /></div>
+                            <div><label className="block text-sm font-medium mb-1">Username</label><input type="text" required className="w-full border p-2 rounded" value={username} onChange={e => setUsername(e.target.value)} /></div>
+                            <div><label className="block text-sm font-medium mb-1">Password</label><input type="password" className="w-full border p-2 rounded" value={password} onChange={e => setPassword(e.target.value)} placeholder="Kosongkan jika tetap" /></div>
+                            <div><label className="block text-sm font-medium mb-1">NISN</label><input type="text" className="w-full border p-2 rounded" value={nisn} onChange={e => setNisn(e.target.value)} /></div>
+                            <div><label className="block text-sm font-medium mb-1">Kelas</label><input type="text" className="w-full border p-2 rounded" value={kelas} onChange={e => setKelas(e.target.value)} /></div>
+                            <div className="pt-4 flex gap-2">
+                                <button type="button" onClick={() => setShowModal(false)} className="flex-1 py-2 border rounded">Batal</button>
+                                <button type="submit" className="flex-1 py-2 bg-blue-600 text-white rounded font-medium">Simpan</button>
+                            </div>
+                        </form>
+                    </Modal>
+
+                    <Modal isOpen={showExcelModal} title="Import Peserta Excel/CSV" onClose={() => setShowExcelModal(false)} maxWidth="max-w-lg">
+                        <div className="space-y-4">
+                            <div className="bg-blue-50 text-blue-800 p-4 rounded-lg text-sm border border-blue-100 mb-2">
+                                <p className="font-bold mb-2">Format Header Kolom (Baris Pertama):</p>
+                                <ul className="list-disc pl-5 space-y-1 text-xs">
+                                    <li><b>Nama</b>: Nama Lengkap Peserta (Wajib)</li>
+                                    <li><b>Username</b>: Username untuk login (Wajib, harus unik)</li>
+                                    <li><b>Password</b>: Kata sandi (Kosongkan = '123')</li>
+                                    <li><b>NISN</b>: Nomor Induk Siswa Nasional (Opsional)</li>
+                                    <li><b>Kelas</b>: Kelas peserta (Opsional)</li>
+                                </ul>
+                            </div>
+                            
+                            <button onClick={downloadTemplate} className="w-full flex justify-center items-center bg-indigo-100 text-indigo-700 py-2.5 rounded-lg font-bold hover:bg-indigo-200 border border-indigo-200 transition shadow-sm mb-4">
+                                <Icons.Download /> <span className="ml-2">Unduh Template Data</span>
+                            </button>
+
+                            <div className="border-t pt-4">
+                                <label className="block text-sm font-medium mb-1 text-gray-700">Tarik dari Link URL (Raw Excel/CSV)</label>
+                                <div className="flex gap-2">
+                                    <input type="url" placeholder="https://..." value={uploadTargetUrl} onChange={(e) => setUploadTargetUrl(e.target.value)} className="flex-1 border border-gray-300 p-2.5 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none bg-gray-50 text-sm" />
+                                    <button onClick={handleUrlImport} disabled={isLoadingUrl} className="bg-blue-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap">
+                                        {isLoadingUrl ? 'Menarik...' : 'Tarik Data'}
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="border-t pt-4">
+                                <label className="block text-sm font-medium mb-1 text-gray-700">Pilih File Komputer (.xlsx, .csv)</label>
+                                <input type="file" accept=".xlsx, .xls, .csv" onChange={handleExcelUpload} className="w-full border border-gray-300 p-2.5 rounded-lg bg-gray-50 text-sm" />
+                            </div>
+                        </div>
+                    </Modal>
+
+                    <Modal isOpen={!!userToDelete} title="Konfirmasi Hapus" onClose={() => setUserToDelete(null)}>
+                        <div className="text-center space-y-4">
+                            <p className="text-gray-700">Apakah Anda yakin ingin menghapus peserta <strong className="text-red-600">{userToDelete?.name}</strong>?</p>
+                            <p className="text-xs text-gray-500">Tindakan ini tidak dapat dibatalkan.</p>
+                            <div className="flex gap-4 pt-2">
+                                <button onClick={() => setUserToDelete(null)} className="flex-1 py-2 border rounded font-medium hover:bg-gray-50 transition">Batal</button>
+                                <button onClick={executeDeleteUser} className="flex-1 py-2 bg-red-600 text-white rounded font-medium hover:bg-red-700 transition">Ya, Hapus</button>
+                            </div>
+                        </div>
+                    </Modal>
+
+                    <Modal isOpen={!!infoMessage} title="Informasi" onClose={() => setInfoMessage('')}>
+                        <div className="text-center space-y-4">
+                            <p className="text-gray-700 font-medium">{infoMessage}</p>
+                            <button onClick={() => setInfoMessage('')} className="w-full py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition">Tutup</button>
+                        </div>
+                    </Modal>
+                </div>
+            );
+        };
+
+        const AdminBankSoal = () => {
+            const [packages, setPackages] = useState([]);
+            const [questions, setQuestions] = useState([]);
+            const [selectedPkgFilter, setSelectedPkgFilter] = useState('');
+            const [showUploadModal, setShowUploadModal] = useState(false);
+            const [showQuestionModal, setShowQuestionModal] = useState(false);
+            const [editingQuestion, setEditingQuestion] = useState(null);
+            
+            const [uploadTargetUrl, setUploadTargetUrl] = useState('');
+            const [isLoadingUrl, setIsLoadingUrl] = useState(false);
+
+            const [qPackageId, setQPackageId] = useState('');
+            const [qType, setQType] = useState('PG');
+            const [qText, setQText] = useState('');
+            const [qBobot, setQBobot] = useState(10);
+            const [qImage, setQImage] = useState('');
+            const [qImageInputType, setQImageInputType] = useState('file');
+            const [qImageUrlInput, setQImageUrlInput] = useState('');
+
+            const [qOptions, setQOptions] = useState(['', '', '', '']);
+            const [qOptionImages, setQOptionImages] = useState(['', '', '', '']);
+            const [qOptionImgInputTypes, setQOptionImgInputTypes] = useState(['file', 'file', 'file', 'file']);
+            const [qOptionImgUrlInputs, setQOptionImgUrlInputs] = useState(['', '', '', '']);
+
+            const [qAnswer, setQAnswer] = useState('');
+            const [qIsianAnswers, setQIsianAnswers] = useState(['']);
+            const [qPgkAnswers, setQPgkAnswers] = useState([]);
+            const [qBsStatements, setQBsStatements] = useState([{ stmt: '', val: 'B', image: '', imgType: 'file', imgUrl: '' }]);
+            const [qJodohPairs, setQJodohPairs] = useState([{ left: '', right: '', leftImage: '', leftImgType: 'file', leftImgUrl: '', rightImage: '', rightImgType: 'file', rightImgUrl: '' }]);
+
+            useEffect(() => { load() }, []);
+            const load = async () => {
+                setPackages(await dbHelper.getAll('packages'));
+                setQuestions(await dbHelper.getAll('questions'));
+            };
+
+            const openAddQuestion = () => {
+                setEditingQuestion(null);
+                setQPackageId(packages[0]?.id || '');
+                setQType('PG');
+                setQText('');
+                setQBobot(10);
+                setQImage('');
+                setQImageInputType('file');
+                setQImageUrlInput('');
+                setQOptions(['', '', '', '']);
+                setQOptionImages(['', '', '', '']);
+                setQOptionImgInputTypes(['file', 'file', 'file', 'file']);
+                setQOptionImgUrlInputs(['', '', '', '']);
+                setQAnswer('');
+                setQIsianAnswers(['']);
+                setQPgkAnswers([]);
+                setQBsStatements([{ stmt: '', val: 'B', image: '', imgType: 'file', imgUrl: '' }]);
+                setQJodohPairs([{ left: '', right: '', leftImage: '', leftImgType: 'file', leftImgUrl: '', rightImage: '', rightImgType: 'file', rightImgUrl: '' }]);
+                setShowQuestionModal(true);
+            };
+
+            const openEditQuestion = (q) => {
+                setEditingQuestion(q);
+                setQPackageId(q.packageId);
+                setQType(q.type);
+                setQText(q.text);
+                setQBobot(q.bobot || 10);
+                setQImage(q.image || '');
+                setQImageInputType('file');
+                setQImageUrlInput('');
+
+                if (q.type === 'PG') {
+                    const opts = q.options || ['', '', '', ''];
+                    const imgs = q.optionImages || Array(opts.length).fill('');
+                    setQOptions(opts);
+                    setQOptionImages(imgs);
+                    setQOptionImgInputTypes(Array(opts.length).fill('file'));
+                    setQOptionImgUrlInputs(Array(opts.length).fill(''));
+                    setQAnswer(q.answer || '');
+                } else if (q.type === 'PGK') {
+                    const opts = q.options || ['', '', '', ''];
+                    const imgs = q.optionImages || Array(opts.length).fill('');
+                    setQOptions(opts);
+                    setQOptionImages(imgs);
+                    setQOptionImgInputTypes(Array(opts.length).fill('file'));
+                    setQOptionImgUrlInputs(Array(opts.length).fill(''));
+                    setQPgkAnswers(Array.isArray(q.answer) ? q.answer : []);
+                } else if (q.type === 'ISIAN') {
+                    const ansArr = Array.isArray(q.answer) ? q.answer : [q.answer || ''];
+                    setQIsianAnswers(ansArr.length > 0 ? ansArr : ['']);
+                } else if (q.type === 'BS') {
+                    if (q.options && q.answer) {
+                        const imgs = q.optionImages || [];
+                        setQBsStatements(q.options.map((stmt, idx) => ({
+                            stmt,
+                            val: q.answer[stmt] || 'B',
+                            image: imgs[idx] || '',
+                            imgType: 'file',
+                            imgUrl: ''
+                        })));
+                    } else {
+                        setQBsStatements([{ stmt: '', val: 'B', image: '', imgType: 'file', imgUrl: '' }]);
+                    }
+                } else if (q.type === 'JODOH') {
+                    if (q.options?.left && q.answer) {
+                        setQJodohPairs(q.options.left.map((left) => ({
+                            left,
+                            right: q.answer[left] || '',
+                            leftImage: '',
+                            leftImgType: 'file',
+                            leftImgUrl: '',
+                            rightImage: '',
+                            rightImgType: 'file',
+                            rightImgUrl: ''
+                        })));
+                    } else {
+                        setQJodohPairs([{ left: '', right: '', leftImage: '', leftImgType: 'file', leftImgUrl: '', rightImage: '', rightImgType: 'file', rightImgUrl: '' }]);
+                    }
+                }
+                setShowQuestionModal(true);
+            };
+
+            const handleSaveQuestion = async (e) => {
+                e.preventDefault();
+                let finalOptions = qOptions;
+                let finalOptionImages = [];
+                let finalAnswer = qAnswer;
+
+                if (qType === 'PG') {
+                    finalOptionImages = qOptionImages;
+                } else if (qType === 'PGK') {
+                    finalOptionImages = qOptionImages;
+                    finalAnswer = qPgkAnswers;
+                } else if (qType === 'ISIAN') {
+                    finalAnswer = qIsianAnswers.filter(a => a.trim() !== '');
+                } else if (qType === 'BS') {
+                    finalOptions = qBsStatements.filter(s => s.stmt.trim() !== '').map(s => s.stmt);
+                    finalOptionImages = qBsStatements.filter(s => s.stmt.trim() !== '').map(s => s.image);
+                    const ansObj = {};
+                    qBsStatements.forEach(s => { if(s.stmt.trim() !== '') ansObj[s.stmt] = s.val });
+                    finalAnswer = ansObj;
+                } else if (qType === 'JODOH') {
+                    const validPairs = qJodohPairs.filter(p => p.left.trim() !== '' && p.right.trim() !== '');
+                    finalOptions = {
+                        left: validPairs.map(p => p.left),
+                        leftImages: validPairs.map(p => p.leftImage),
+                        right: [...new Set(validPairs.map(p => p.right))],
+                        rightImages: []
+                    };
+                    const ansObj = {};
+                    validPairs.forEach(p => { ansObj[p.left] = p.right });
+                    finalAnswer = ansObj;
+                }
+
+                const questionData = {
+                    id: editingQuestion ? editingQuestion.id : 'q_' + Date.now(),
+                    packageId: qPackageId,
+                    type: qType,
+                    text: qText,
+                    bobot: parseInt(qBobot) || 10,
+                    image: qImage,
+                    options: finalOptions,
+                    optionImages: finalOptionImages,
+                    answer: finalAnswer
+                };
+
+                await dbHelper.put('questions', questionData);
+                setShowQuestionModal(false);
+                load();
+            };
+
+            const deleteQuestion = async (id) => {
+                if (confirm('Yakin ingin menghapus soal ini?')) {
+                    await dbHelper.delete('questions', id);
+                    load();
+                }
+            };
+
+            const togglePackage = async (pkg) => {
+                await dbHelper.put('packages', { ...pkg, active: !pkg.active });
+                load();
+            };
+
+            const downloadTemplate = () => {
+                const templateData = [
+                    { PackageID: 'MAT-1', Jenis: 'PG', Soal: 'Berapa hasil 1 + 1?', Opsi: '1 | 2 | 3 | 4', Kunci: '2', Bobot: 10, Image: '', OpsiImages: '' },
+                    { PackageID: 'MAT-1', Jenis: 'PGK', Soal: 'Pilih bilangan genap:', Opsi: '1 | 2 | 3 | 4', Kunci: '2 | 4', Bobot: 10, Image: '', OpsiImages: '' },
+                    { PackageID: 'MAT-1', Jenis: 'BS', Soal: 'Tentukan Benar/Salah', Opsi: 'Bumi bulat | Matahari mengelilingi bumi', Kunci: 'B | S', Bobot: 10, Image: '', OpsiImages: '' },
+                    { PackageID: 'MAT-1', Jenis: 'JODOH', Soal: 'Jodohkan provinsi:', Opsi: 'Jawa Barat | Jawa Timur', Kunci: 'Bandung | Surabaya', Bobot: 10, Image: '', OpsiImages: '' },
+                    { PackageID: 'MAT-1', Jenis: 'ISIAN', Soal: 'Presiden pertama Indonesia?', Opsi: '', Kunci: 'Soekarno', Bobot: 10, Image: '', OpsiImages: '' }
+                ];
+
+                const ws = XLSX.utils.json_to_sheet(templateData);
+                ws['!cols'] = [
+                    { wch: 12 }, { wch: 8 }, { wch: 35 }, { wch: 30 }, { wch: 20 }, { wch: 8 }, { wch: 15 }, { wch: 15 }
+                ];
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Template_Soal");
+                XLSX.writeFile(wb, "Template_Import_Soal_TKA.xlsx");
+            };
+
+            const processQuestionData = async (data) => {
+                let count = 0;
+                for (let row of data) {
+                    if (!row.PackageID || !row.Jenis || !row.Soal || row.Kunci === undefined) continue;
+                    
+                    let qType = String(row.Jenis).toUpperCase().trim();
+                    let finalOptions = [];
+                    let finalOptionImages = [];
+                    let finalAnswer = '';
+                    
+                    const opsiImgs = String(row.OpsiImages || '').split('|').map(s => s.trim());
+
+                    if (qType === 'PG') {
+                        finalOptions = String(row.Opsi || '').split('|').map(s => s.trim());
+                        finalOptionImages = finalOptions.map((_, i) => opsiImgs[i] || '');
+                        finalAnswer = String(row.Kunci).trim();
+                    } else if (qType === 'PGK') {
+                        finalOptions = String(row.Opsi || '').split('|').map(s => s.trim());
+                        finalOptionImages = finalOptions.map((_, i) => opsiImgs[i] || '');
+                        finalAnswer = String(row.Kunci).split('|').map(s => s.trim());
+                    } else if (qType === 'ISIAN') {
+                        finalAnswer = String(row.Kunci).split('|').map(s => s.trim());
+                    } else if (qType === 'BS') {
+                        const stmts = String(row.Opsi || '').split('|').map(s => s.trim());
+                        const keys = String(row.Kunci).split('|').map(s => s.trim().toUpperCase());
+                        finalOptions = stmts;
+                        finalOptionImages = stmts.map((_, i) => opsiImgs[i] || '');
+                        const ansObj = {};
+                        stmts.forEach((stmt, idx) => {
+                            ansObj[stmt] = keys[idx] || 'B';
+                        });
+                        finalAnswer = ansObj;
+                    } else if (qType === 'JODOH') {
+                        const lefts = String(row.Opsi || '').split('|').map(s => s.trim());
+                        const rights = String(row.Kunci).split('|').map(s => s.trim());
+                        finalOptions = {
+                            left: lefts,
+                            leftImages: lefts.map((_, i) => opsiImgs[i] || ''),
+                            right: [...new Set(rights)],
+                            rightImages: []
+                        };
+                        const ansObj = {};
+                        lefts.forEach((left, idx) => {
+                            ansObj[left] = rights[idx] || '';
+                        });
+                        finalAnswer = ansObj;
+                    } else {
+                        continue;
+                    }
+
+                    await dbHelper.put('questions', {
+                        id: 'q_' + Date.now() + Math.random().toString(36).substr(2, 4),
+                        packageId: String(row.PackageID).trim(),
+                        type: qType,
+                        text: String(row.Soal),
+                        bobot: parseInt(row.Bobot) || 10,
+                        image: row.Image || '',
+                        options: finalOptions,
+                        optionImages: finalOptionImages,
+                        answer: finalAnswer
+                    });
+                    count++;
+                }
+                alert(`Berhasil mengimpor ${count} soal.`);
+                setShowUploadModal(false);
+                setUploadTargetUrl('');
+                load();
+            };
+
+            const handleExcelUpload = async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = async (evt) => {
+                    try {
+                        const data = processWorkbook(evt.target.result, true);
+                        await processQuestionData(data);
+                    } catch (err) {
+                        console.error(err);
+                        alert("Gagal membaca file Excel/CSV soal.");
+                    }
+                };
+                reader.readAsBinaryString(file);
+            };
+
+            const handleUrlImport = async () => {
+                if (!uploadTargetUrl) {
+                    alert("Masukkan URL file terlebih dahulu.");
+                    return;
+                }
+                setIsLoadingUrl(true);
+                try {
+                    const response = await fetch(uploadTargetUrl);
+                    if (!response.ok) throw new Error("Network response was not ok");
+                    const arrayBuffer = await response.arrayBuffer();
+                    const data = processWorkbook(arrayBuffer, false);
+                    await processQuestionData(data);
+                } catch (error) {
+                    console.error(error);
+                    alert("Gagal menarik data dari URL.");
+                } finally {
+                    setIsLoadingUrl(false);
+                }
+            };
+
+            const filteredQuestions = useMemo(() => {
+                return selectedPkgFilter ? questions.filter(q => q.packageId === selectedPkgFilter) : questions;
+            }, [questions, selectedPkgFilter]);
+
+            return (
+                <div className="space-y-6">
+                    <div className="bg-white rounded-xl shadow-sm border p-6">
+                        <div className="flex justify-between items-center mb-6">
+                            <h3 className="text-lg font-bold text-gray-800">Paket Soal</h3>
+                            <div className="flex gap-2">
+                                <button onClick={() => setShowUploadModal(true)} className="flex items-center bg-green-600 text-white px-4 py-2 rounded text-sm font-medium hover:bg-green-700">
+                                    <Icons.Upload /><span className="ml-2">Import Excel</span>
+                                </button>
+                                <button onClick={openAddQuestion} className="bg-blue-600 text-white px-4 py-2 rounded text-sm font-medium hover:bg-blue-700">
+                                    + Tambah Soal Manual
+                                </button>
+                            </div>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            {packages.map(pkg => {
+                                const qCount = questions.filter(q => q.packageId === pkg.id).length;
+                                return (
+                                    <div key={pkg.id} className="border p-4 rounded-lg flex flex-col">
+                                        <div className="flex justify-between items-start mb-2">
+                                            <div>
+                                                <h4 className="font-bold text-gray-800">{pkg.name} - {pkg.subject}</h4>
+                                                <p className="text-sm text-gray-500">{qCount} Soal | {pkg.duration} Menit</p>
+                                            </div>
+                                            <span className={`px-2 py-1 text-xs font-semibold rounded ${pkg.active ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                                {pkg.active ? 'Aktif' : 'Nonaktif'}
+                                            </span>
+                                        </div>
+                                        <div className="mt-4 pt-4 border-t flex gap-2">
+                                            <button onClick={() => togglePackage(pkg)} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-1.5 rounded text-sm">
+                                                Ubah Status
+                                            </button>
+                                            <button onClick={() => setSelectedPkgFilter(selectedPkgFilter === pkg.id ? '' : pkg.id)} className={`flex-1 font-medium py-1.5 rounded text-sm ${selectedPkgFilter === pkg.id ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-600'}`}>
+                                                {selectedPkgFilter === pkg.id ? 'Semua' : 'Lihat'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+
+                    <div className="bg-white rounded-xl shadow-sm border p-6">
+                        <h3 className="text-lg font-bold text-gray-800 mb-4">Daftar Soal</h3>
+                        <div className="space-y-4">
+                            {filteredQuestions.map((q, idx) => {
+                                const pkg = packages.find(p => p.id === q.packageId);
+                                return (
+                                    <div key={q.id} className="border p-4 rounded-lg flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                                        <div className="flex-1">
+                                            <div className="flex items-center space-x-2 mb-1">
+                                                <span className="bg-blue-100 text-blue-800 text-xs px-2 py-0.5 font-bold rounded">{q.type}</span>
+                                                <span className="text-xs text-gray-500 font-medium">{pkg ? `${pkg.subject} - ${pkg.name}` : ''}</span>
+                                            </div>
+                                            <p className="text-gray-800 font-medium">{idx + 1}. {q.text}</p>
+                                        </div>
+                                        <div className="flex gap-2">
+                                            <button onClick={() => openEditQuestion(q)} className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded text-sm font-medium">Edit</button>
+                                            <button onClick={() => deleteQuestion(q.id)} className="px-3 py-1.5 bg-red-50 text-red-600 rounded text-sm font-medium">Hapus</button>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                            {filteredQuestions.length === 0 && <p className="text-center text-gray-500 py-4">Belum ada soal tersedia.</p>}
+                        </div>
+                    </div>
+
+                    <Modal isOpen={showQuestionModal} title={editingQuestion ? "Edit Soal" : "Tambah Soal"} onClose={() => setShowQuestionModal(false)} maxWidth="max-w-3xl">
+                        <form onSubmit={handleSaveQuestion} className="space-y-4 pr-2">
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Paket Soal</label>
+                                <select required className="w-full border p-2 rounded" value={qPackageId} onChange={e => setQPackageId(e.target.value)}>
+                                    {packages.map(p => <option key={p.id} value={p.id}>{p.subject} - {p.name}</option>)}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Jenis Soal</label>
+                                <select className="w-full border p-2 rounded" value={qType} onChange={e => setQType(e.target.value)}>
+                                    <option value="PG">Pilihan Ganda</option>
+                                    <option value="PGK">Pilihan Ganda Kompleks</option>
+                                    <option value="JODOH">Menjodohkan</option>
+                                    <option value="BS">Benar-Salah</option>
+                                    <option value="ISIAN">Isian Singkat</option>
+                                </select>
+                            </div>
+                            
+                            <div className="border-t pt-3">
+                                <label className="block text-sm font-medium mb-2">Gambar Soal (Opsional)</label>
+                                <div className="flex gap-2 mb-2">
+                                    <button type="button" onClick={() => setQImageInputType('file')} className={`px-3 py-1 rounded text-xs font-semibold ${qImageInputType === 'file' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700'}`}>Upload Perangkat</button>
+                                    <button type="button" onClick={() => setQImageInputType('url')} className={`px-3 py-1 rounded text-xs font-semibold ${qImageInputType === 'url' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700'}`}>Link URL Browser</button>
+                                </div>
+                                {qImageInputType === 'file' ? (
+                                    <input type="file" accept="image/*" onChange={(e) => {
+                                        const file = e.target.files[0];
+                                        if(file) {
+                                            const reader = new FileReader();
+                                            reader.onload = (evt) => setQImage(evt.target.result);
+                                            reader.readAsDataURL(file);
+                                        }
+                                    }} className="w-full border p-1 rounded text-sm bg-gray-50" />
+                                ) : (
+                                    <div className="flex gap-2">
+                                        <input type="url" placeholder="https://..." value={qImageUrlInput} onChange={(e) => setQImageUrlInput(e.target.value)} className="flex-1 border p-2 rounded text-sm" />
+                                        <button type="button" onClick={() => { if(qImageUrlInput) setQImage(qImageUrlInput); }} className="bg-blue-600 text-white px-3 py-2 rounded text-sm font-medium">Gunakan</button>
+                                    </div>
+                                )}
+                                {qImage && (
+                                    <div className="mt-2 relative inline-block">
+                                        <img src={qImage} className="h-32 object-contain border rounded" alt="Preview"/>
+                                        <button type="button" onClick={() => setQImage('')} className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs font-bold">&times;</button>
+                                    </div>
+                                )}
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Pertanyaan / Teks Soal</label>
+                                <div className="flex flex-wrap gap-1 mb-2">
+                                    {['√', '²', '³', '½', '¼', 'π', '±', '∞', '÷', '×', '°', '≤', '≥', '≈', '≠'].map(sym => (
+                                        <button type="button" key={sym} onClick={() => setQText(qText + sym)} className="px-2 py-1 bg-gray-100 hover:bg-gray-200 border rounded text-xs font-mono shadow-sm">{sym}</button>
+                                    ))}
+                                </div>
+                                <textarea required rows="3" className="w-full border p-2 rounded" value={qText} onChange={e => setQText(e.target.value)} placeholder="Tuliskan soal..." />
+                            </div>
+
+                            {qType === 'PG' && (
+                                <div className="space-y-4 border-t pt-3">
+                                    <label className="block text-sm font-medium">Opsi Jawaban, Gambar & Kunci</label>
+                                    {qOptions.map((opt, i) => (
+                                        <div key={i} className="border p-3 rounded bg-gray-50 space-y-2">
+                                            <div className="flex gap-2 items-center">
+                                                <input type="radio" name="pg_key" checked={qAnswer === opt && opt !== ''} onChange={() => setQAnswer(opt)} className="w-4 h-4 accent-blue-600" />
+                                                <span className="font-bold text-sm text-gray-700">Opsi {String.fromCharCode(65+i)}</span>
+                                            </div>
+                                            <textarea required className="w-full border p-1.5 rounded text-sm min-h-[35px]" placeholder={`Teks Opsi ${String.fromCharCode(65+i)}`} value={opt} onChange={e => {
+                                                const newOpts = [...qOptions];
+                                                newOpts[i] = e.target.value;
+                                                setQOptions(newOpts);
+                                                if(qAnswer === opt) setQAnswer(e.target.value); 
+                                            }} />
+                                            
+                                            <div className="flex gap-2 items-center pt-1">
+                                                <span className="text-xs text-gray-500">Gambar Opsi:</span>
+                                                <select className="border p-1 rounded text-xs" value={qOptionImgInputTypes[i]} onChange={e => {
+                                                    const t = [...qOptionImgInputTypes]; t[i] = e.target.value; setQOptionImgInputTypes(t);
+                                                }}>
+                                                    <option value="file">Perangkat</option>
+                                                    <option value="url">URL Browser</option>
+                                                </select>
+                                                {qOptionImgInputTypes[i] === 'file' ? (
+                                                    <input type="file" accept="image/*" onChange={(e) => {
+                                                        const file = e.target.files[0];
+                                                        if(file) {
+                                                            const reader = new FileReader();
+                                                            reader.onload = (evt) => {
+                                                                const newImgs = [...qOptionImages]; newImgs[i] = evt.target.result; setQOptionImages(newImgs);
+                                                            };
+                                                            reader.readAsDataURL(file);
+                                                        }
+                                                    }} className="text-xs" />
+                                                ) : (
+                                                    <div className="flex gap-1 flex-1">
+                                                        <input type="url" placeholder="https://..." value={qOptionImgUrlInputs[i]} onChange={(e) => {
+                                                            const u = [...qOptionImgUrlInputs]; u[i] = e.target.value; setQOptionImgUrlInputs(u);
+                                                        }} className="border p-1 text-xs rounded flex-1" />
+                                                        <button type="button" onClick={() => {
+                                                            const u = qOptionImgUrlInputs[i];
+                                                            if(u) { const newImgs = [...qOptionImages]; newImgs[i] = u; setQOptionImages(newImgs); }
+                                                        }} className="bg-blue-600 text-white px-2 py-1 rounded text-xs">Set</button>
+                                                    </div>
+                                                )}
+                                            </div>
+                                            {qOptionImages[i] && (
+                                                <div className="relative inline-block mt-1">
+                                                    <img src={qOptionImages[i]} className="h-20 object-contain border rounded bg-white" alt="Opsi Preview"/>
+                                                    <button type="button" onClick={() => {
+                                                        const newImgs = [...qOptionImages]; newImgs[i] = ''; setQOptionImages(newImgs);
+                                                    }} className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs">&times;</button>
+                                                </div>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+
+                            {qType === 'PGK' && (
+                                <div className="space-y-4 border-t pt-3">
+                                    <label className="block text-sm font-medium">Opsi Jawaban Kompleks (Centang Kunci)</label>
+                                    {qOptions.map((opt, i) => (
+                                        <div key={i} className="border p-3 rounded bg-gray-50 space-y-2">
+                                            <div className="flex justify-between items-center">
+                                                <label className="flex items-center gap-2 cursor-pointer">
+                                                    <input type="checkbox" checked={qPgkAnswers.includes(opt) && opt !== ''} onChange={(e) => {
+                                                        if(e.target.checked) setQPgkAnswers([...qPgkAnswers, opt]);
+                                                        else setQPgkAnswers(qPgkAnswers.filter(a => a !== opt));
+                                                    }} className="w-4 h-4 accent-blue-600" />
+                                                    <span className="text-xs font-bold text-gray-700">Kunci Benar ({i+1})</span>
+                                                </label>
+                                                <button type="button" onClick={() => {
+                                                    const newOpts = qOptions.filter((_, idx) => idx !== i);
+                                                    setQOptions(newOpts);
+                                                    setQPgkAnswers(qPgkAnswers.filter(a => a !== opt));
+                                                    const newImgs = qOptionImages.filter((_, idx) => idx !== i);
+                                                    setQOptionImages(newImgs);
+                                                }} className="text-red-500 font-bold text-sm">&times;</button>
+                                            </div>
+                                            <textarea required className="w-full border p-1.5 rounded text-sm min-h-[35px]" placeholder={`Opsi ${i+1}`} value={opt} onChange={e => {
+                                                const oldOpt = qOptions[i];
+                                                const newOpts = [...qOptions];
+                                                newOpts[i] = e.target.value;
+                                                setQOptions(newOpts);
+                                                if(qPgkAnswers.includes(oldOpt)) {
+                                                    setQPgkAnswers(qPgkAnswers.map(a => a === oldOpt ? e.target.value : a));
+                                                }
+                                            }} />
+                                            
+                                            <div className="flex gap-2 items-center pt-1">
+                                                <span className="text-xs text-gray-500">Gambar Opsi:</span>
+                                                <input type="file" accept="image/*" onChange={(e) => {
+                                                    const file = e.target.files[0];
+                                                    if(file) {
+                                                        const reader = new FileReader();
+                                                        reader.onload = (evt) => {
+                                                            const newImgs = [...qOptionImages]; newImgs[i] = evt.target.result; setQOptionImages(newImgs);
+                                                        };
+                                                        reader.readAsDataURL(file);
+                                                    }
+                                                }} className="text-xs" />
+                                            </div>
+                                            {qOptionImages[i] && (
+                                                <div className="relative inline-block mt-1">
+                                                    <img src={qOptionImages[i]} className="h-20 object-contain border rounded bg-white" alt="Preview"/>
+                                                    <button type="button" onClick={() => {
+                                                        const newImgs = [...qOptionImages]; newImgs[i] = ''; setQOptionImages(newImgs);
+                                                    }} className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs">&times;</button>
+                                                </div>
+                                            )}
+                                        </div>
+                                    ))}
+                                    <button type="button" onClick={() => {
+                                        setQOptions([...qOptions, '']);
+                                        setQOptionImages([...qOptionImages, '']);
+                                    }} className="text-blue-600 text-xs font-semibold">+ Tambah Opsi</button>
+                                </div>
+                            )}
+
+                            {qType === 'BS' && (
+                                <div className="space-y-4 border-t pt-3">
+                                    <label className="block text-sm font-medium">Pernyataan Benar / Salah</label>
+                                    {qBsStatements.map((item, i) => (
+                                        <div key={i} className="border p-3 rounded bg-gray-50 space-y-2">
+                                            <div className="flex gap-2 items-center">
+                                                <textarea required className="flex-1 border p-1.5 rounded text-sm min-h-[35px]" placeholder="Tulis pernyataan..." value={item.stmt} onChange={e => {
+                                                    const newStmts = [...qBsStatements];
+                                                    newStmts[i].stmt = e.target.value;
+                                                    setQBsStatements(newStmts);
+                                                }} />
+                                                <select className="border p-1.5 rounded text-sm font-medium" value={item.val} onChange={e => {
+                                                    const newStmts = [...qBsStatements];
+                                                    newStmts[i].val = e.target.value;
+                                                    setQBsStatements(newStmts);
+                                                }}>
+                                                    <option value="B">Benar</option>
+                                                    <option value="S">Salah</option>
+                                                </select>
+                                                <button type="button" onClick={() => setQBsStatements(qBsStatements.filter((_, idx) => idx !== i))} className="text-red-500 font-bold px-2">&times;</button>
+                                            </div>
+                                            <div className="flex gap-2 items-center text-xs">
+                                                <span>Gambar Pernyataan:</span>
+                                                <input type="file" accept="image/*" onChange={(e) => {
+                                                    const file = e.target.files[0];
+                                                    if(file) {
+                                                        const reader = new FileReader();
+                                                        reader.onload = (evt) => {
+                                                            const newStmts = [...qBsStatements]; newStmts[i].image = evt.target.result; setQBsStatements(newStmts);
+                                                        };
+                                                        reader.readAsDataURL(file);
+                                                    }
+                                                }} />
+                                            </div>
+                                            {item.image && (
+                                                <div className="relative inline-block mt-1">
+                                                    <img src={item.image} className="h-16 object-contain border rounded bg-white" alt="Preview"/>
+                                                    <button type="button" onClick={() => {
+                                                        const newStmts = [...qBsStatements]; newStmts[i].image = ''; setQBsStatements(newStmts);
+                                                    }} className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs">&times;</button>
+                                                </div>
+                                            )}
+                                        </div>
+                                    ))}
+                                    <button type="button" onClick={() => setQBsStatements([...qBsStatements, {stmt:'', val:'B', image:'', imgType:'file', imgUrl:''}])} className="text-blue-600 text-xs font-semibold">+ Tambah Pernyataan</button>
+                                </div>
+                            )}
+
+                            {qType === 'JODOH' && (
+                                <div className="space-y-4 border-t pt-3">
+                                    <label className="block text-sm font-medium">Pasangan Menjodohkan</label>
+                                    {qJodohPairs.map((pair, i) => (
+                                        <div key={i} className="border p-3 rounded bg-gray-50 space-y-2">
+                                            <div className="flex gap-2 items-center">
+                                                <textarea required className="flex-1 border p-1.5 rounded text-sm min-h-[35px]" placeholder="Pertanyaan Kiri" value={pair.left} onChange={e => {
+                                                    const newPairs = [...qJodohPairs]; newPairs[i].left = e.target.value; setQJodohPairs(newPairs);
+                                                }} />
+                                                <textarea required className="flex-1 border p-1.5 rounded text-sm min-h-[35px]" placeholder="Jawaban Kanan" value={pair.right} onChange={e => {
+                                                    const newPairs = [...qJodohPairs]; newPairs[i].right = e.target.value; setQJodohPairs(newPairs);
+                                                }} />
+                                                <button type="button" onClick={() => setQJodohPairs(qJodohPairs.filter((_, idx) => idx !== i))} className="text-red-500 font-bold px-2">&times;</button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                    <button type="button" onClick={() => setQJodohPairs([...qJodohPairs, {left:'', right:'', leftImage:'', leftImgType:'file', leftImgUrl:'', rightImage:'', rightImgType:'file', rightImgUrl:''}])} className="text-blue-600 text-xs font-semibold">+ Tambah Pasangan</button>
+                                </div>
+                            )}
+
+                            {qType === 'ISIAN' && (
+                                <div className="space-y-2 border-t pt-3">
+                                    <label className="block text-sm font-medium">Kunci Jawaban</label>
+                                    {qIsianAnswers.map((ans, i) => (
+                                        <div key={i} className="flex gap-2 items-center">
+                                            <input type="text" required className="flex-1 border p-1.5 rounded text-sm" placeholder="Contoh: Soekarno" value={ans} onChange={e => {
+                                                const newAns = [...qIsianAnswers]; newAns[i] = e.target.value; setQIsianAnswers(newAns);
+                                            }} />
+                                            <button type="button" onClick={() => setQIsianAnswers(qIsianAnswers.filter((_, idx) => idx !== i))} className="text-red-500 font-bold px-2">&times;</button>
+                                        </div>
+                                    ))}
+                                    <button type="button" onClick={() => setQIsianAnswers([...qIsianAnswers, ''])} className="text-blue-600 text-xs font-semibold">+ Tambah Kunci Alternatif</button>
+                                </div>
+                            )}
+
+                            <div className="pt-3 border-t">
+                                <label className="block text-sm font-medium mb-1">Bobot Soal</label>
+                                <input type="number" min="1" required className="w-full border p-2 rounded" value={qBobot} onChange={e => setQBobot(e.target.value)} />
+                            </div>
+
+                            <div className="pt-4 flex gap-2">
+                                <button type="button" onClick={() => setShowQuestionModal(false)} className="flex-1 py-2 border rounded">Batal</button>
+                                <button type="submit" className="flex-1 py-2 bg-blue-600 text-white rounded font-medium">Simpan Soal</button>
+                            </div>
+                        </form>
+                    </Modal>
+
+                    <Modal isOpen={showUploadModal} title="Import Soal Excel" onClose={() => setShowUploadModal(false)} maxWidth="max-w-3xl">
+                        <div className="space-y-4">
+                            <div className="bg-blue-50 text-blue-800 p-4 rounded-lg text-sm border border-blue-100">
+                                <p className="font-bold mb-2">Format Header Kolom Excel:</p>
+                                <ul className="list-disc pl-5 space-y-1.5 text-xs">
+                                    <li><b>PackageID</b>: ID Paket tujuan (contoh: MAT-1)</li>
+                                    <li><b>Jenis</b>: PG, PGK, BS, JODOH, atau ISIAN</li>
+                                    <li><b>Soal</b>: Teks pertanyaan</li>
+                                    <li><b>Opsi</b>: Pisahkan dengan tanda <code className="bg-white text-blue-600 px-1 py-0.5 rounded font-bold border">|</code></li>
+                                    <li><b>Kunci</b>: Jawaban benar</li>
+                                    <li><b>Bobot</b>: Angka bobot soal</li>
+                                    <li><b>Image</b>: Link URL gambar soal (Opsional)</li>
+                                    <li><b>OpsiImages</b>: Link URL gambar opsi dipisah <code className="bg-white text-blue-600 px-1 py-0.5 rounded font-bold border">|</code> (Opsional)</li>
+                                </ul>
+                            </div>
+                            
+                            <button onClick={downloadTemplate} className="w-full flex justify-center items-center bg-indigo-100 text-indigo-700 py-2.5 rounded-lg font-bold hover:bg-indigo-200 border border-indigo-200 transition shadow-sm mb-2">
+                                <Icons.Download /> <span className="ml-2">Unduh Format (Template)</span>
+                            </button>
+
+                            <div className="border-t pt-4">
+                                <label className="block text-sm font-medium mb-1 text-gray-700">Tarik dari Link URL (Raw Excel/CSV)</label>
+                                <div className="flex gap-2">
+                                    <input type="url" placeholder="https://..." value={uploadTargetUrl} onChange={(e) => setUploadTargetUrl(e.target.value)} className="flex-1 border border-gray-300 p-2.5 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none bg-gray-50 text-sm" />
+                                    <button onClick={handleUrlImport} disabled={isLoadingUrl} className="bg-blue-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap">
+                                        {isLoadingUrl ? 'Menarik...' : 'Tarik Data'}
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="border-t pt-4">
+                                <label className="block text-sm font-medium mb-1 text-gray-700">Upload File Komputer (.xlsx, .csv)</label>
+                                <input type="file" accept=".xlsx, .xls, .csv" onChange={handleExcelUpload} className="w-full border border-gray-300 p-2.5 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none bg-gray-50" />
+                            </div>
+                        </div>
+                    </Modal>
+                </div>
+            );
+        };
+
+        const AdminHasil = () => {
+            const [results, setResults] = useState([]);
+            const [packages, setPackages] = useState([]);
+            const [showEmailModal, setShowEmailModal] = useState(false);
+            const [targetResult, setTargetResult] = useState(null);
+            const [recipientEmail, setRecipientEmail] = useState('');
+            const [isSending, setIsSending] = useState(false);
+            const [emailStatusMessage, setEmailStatusMessage] = useState('');
+            
+            useEffect(() => { load() }, []);
+            const load = async () => {
+                setResults(await dbHelper.getAll('results'));
+                setPackages(await dbHelper.getAll('packages'));
+            };
+
+            const exportExcel = () => {
+                const data = results.map(r => {
+                    const pkg = packages.find(p => p.id === r.packageId);
+                    return {
+                        'Nama Peserta': r.userName,
+                        'NISN': r.nisn,
+                        'Kelas': r.kelas,
+                        'Mata Pelajaran': pkg ? pkg.subject : '-',
+                        'Paket': pkg ? pkg.name : '-',
+                        'Nilai Akhir': r.score,
+                        'Waktu Selesai': new Date(r.endTime).toLocaleString()
+                    };
+                });
+                const ws = XLSX.utils.json_to_sheet(data);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Rekap_Nilai");
+                XLSX.writeFile(wb, `Rekap_Nilai_TKA.xlsx`);
+            };
+
+            const openEmailModal = (r) => {
+                setTargetResult(r);
+                setRecipientEmail('');
+                setEmailStatusMessage('');
+                setShowEmailModal(true);
+            };
+
+            const handleSendEmail = (e) => {
+                e.preventDefault();
+                if (!recipientEmail) return;
+                setIsSending(true);
+
+                const pkg = packages.find(p => p.id === targetResult.packageId);
+                const subject = encodeURIComponent(`Hasil Ujian TKA - ${targetResult.userName} (${targetResult.kelas})`);
+                const body = encodeURIComponent(
+                    `Halo,\n\nBerikut adalah hasil rekapitulasi ujian Tes Kemampuan Akademik (TKA) SMP Negeri 5 Sajira:\n\n` +
+                    `- Nama Peserta: ${targetResult.userName}\n` +
+                    `- NISN: ${targetResult.nisn || '-'}\n` +
+                    `- Kelas: ${targetResult.kelas || '-'}\n` +
+                    `- Paket Ujian: ${pkg ? `${pkg.subject} (${pkg.name})` : targetResult.packageId}\n` +
+                    `- Nilai Akhir: ${targetResult.score}\n` +
+                    `- Waktu Selesai: ${new Date(targetResult.endTime).toLocaleString()}\n\n` +
+                    `Terima kasih.\nAdmin CBT SMPN 5 Sajira`
+                );
+
+                setTimeout(() => {
+                    window.location.href = `mailto:${recipientEmail}?subject=${subject}&body=${body}`;
+                    setIsSending(false);
+                    setEmailStatusMessage('Klien email perangkat Anda berhasil dibuka untuk mengirim laporan.');
+                }, 600);
+            };
+
+            return (
+                <div className="bg-white rounded-xl shadow-sm border p-6">
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+                        <h3 className="text-lg font-bold text-gray-800">Rekapitulasi Hasil Ujian</h3>
+                        <button onClick={exportExcel} className="bg-green-600 text-white px-4 py-2 rounded text-sm font-medium hover:bg-green-700">
+                            Download Excel
+                        </button>
+                    </div>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left text-sm">
+                            <thead className="bg-gray-50 border-b">
+                                <tr>
+                                    <th className="p-3">Nama Peserta</th>
+                                    <th className="p-3">Kelas</th>
+                                    <th className="p-3">Paket Ujian</th>
+                                    <th className="p-3">Nilai Akhir</th>
+                                    <th className="p-3">Waktu Selesai</th>
+                                    <th className="p-3 text-center">Aksi Email</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {results.map(r => {
+                                    const pkg = packages.find(p => p.id === r.packageId);
+                                    return (
+                                        <tr key={r.id} className="border-b hover:bg-gray-50">
+                                            <td className="p-3 font-medium">{r.userName}</td>
+                                            <td className="p-3">{r.kelas}</td>
+                                            <td className="p-3">{pkg ? `${pkg.subject} - ${pkg.name}` : r.packageId}</td>
+                                            <td className="p-3 font-bold text-blue-600">{r.score}</td>
+                                            <td className="p-3 text-gray-500">{new Date(r.endTime).toLocaleString()}</td>
+                                            <td className="p-3 text-center">
+                                                <button onClick={() => openEmailModal(r)} className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold px-3 py-1.5 rounded text-xs transition border border-indigo-200">
+                                                    Kirim Email
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                                {results.length === 0 && <tr><td colSpan="6" className="p-4 text-center text-gray-500">Belum ada hasil ujian.</td></tr>}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <Modal isOpen={showEmailModal} title="Kirim Hasil Ujian via Email" onClose={() => setShowEmailModal(false)}>
+                        <form onSubmit={handleSendEmail} className="space-y-4">
+                            {targetResult && (
+                                <div className="bg-gray-50 p-3 rounded-lg text-xs space-y-1 border text-gray-700">
+                                    <p><b>Peserta:</b> {targetResult.userName} ({targetResult.kelas})</p>
+                                    <p><b>Nilai:</b> <span className="text-blue-600 font-bold">{targetResult.score}</span></p>
+                                </div>
+                            )}
+                            <div>
+                                <label className="block text-sm font-medium mb-1 text-gray-700">Alamat Email Tujuan</label>
+                                <input type="email" required placeholder="admin@sekolah.sch.id atau orangtua@gmail.com" value={recipientEmail} onChange={(e) => setRecipientEmail(e.target.value)} className="w-full border p-2.5 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none text-sm" />
+                                <p className="text-xs text-gray-500 mt-1">Sistem akan membuka aplikasi email (mailto) dengan format laporan lengkap peserta.</p>
+                            </div>
+                            {emailStatusMessage && (
+                                <div className="bg-emerald-50 text-emerald-700 p-3 rounded-lg text-xs font-medium border border-emerald-100">
+                                    {emailStatusMessage}
+                                </div>
+                            )}
+                            <div className="flex gap-2 pt-2">
+                                <button type="button" onClick={() => setShowEmailModal(false)} className="flex-1 py-2 border rounded text-gray-700 text-sm font-semibold hover:bg-gray-50">Batal</button>
+                                <button type="submit" disabled={isSending} className="flex-1 py-2 bg-blue-600 text-white rounded text-sm font-bold hover:bg-blue-700 disabled:opacity-50 transition">
+                                    {isSending ? 'Mempersiapkan...' : 'Kirim Email'}
+                                </button>
+                            </div>
+                        </form>
+                    </Modal>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
