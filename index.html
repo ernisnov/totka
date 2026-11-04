@@ -3,7 +3,7 @@ import {
   User, Lock, LogOut, BookOpen, FileText, CheckCircle, 
   Clock, Activity, Database, Users, BarChart, ChevronRight, 
   ChevronLeft, AlertCircle, Save, LayoutDashboard, MonitorPlay,
-  Settings, PenTool, CheckSquare, Download, Loader2
+  Settings, PenTool, CheckSquare, Download, Loader2, X
 } from 'lucide-react';
 
 // =====================================================================
@@ -14,7 +14,7 @@ const DB_NAME = 'TKA_SMPN5_Database';
 const DB_VERSION = 1;
 
 const SEED_USERS = [
-  { id: 'u1', username: 'admin', password: 'hash_12345', role: 'admin', name: 'Administrator' },
+  { id: 'u1', username: 'admin', password: '123', role: 'admin', name: 'Administrator' },
 ];
 
 const SEED_PACKAGES = [
@@ -731,7 +731,7 @@ function TestEngine({ user, pkg, onFinish }) {
       
       questions.forEach(q => {
         const sAns = finalAnswers[q.id];
-        if (pkg.type === 'math' || pkg.type === 'indo') {
+        if (pkg.type === 'math' || pkg.type === 'indo' || q.type === 'academic') {
           if (sAns === q.answer) score += (q.weight || 10);
         } else {
           if (sAns !== undefined && sAns !== null && sAns !== '') {
@@ -768,7 +768,7 @@ function TestEngine({ user, pkg, onFinish }) {
       }
     } catch (err) {
       console.error("Error submitting test", err);
-      alert("Terjadi kesalahan saat menyimpan hasil akhir.");
+      setSavingStatus('Gagal mengirim hasil!');
     }
   };
 
@@ -2020,7 +2020,7 @@ function AdminResults() {
     pkgQs.forEach(q => {
       const sAns = r.answers ? r.answers[q.id] : undefined;
       if (sAns !== undefined && sAns !== null && sAns !== '') {
-        if (r.packageType === 'academic' || r.packageType === 'math' || r.packageType === 'indo') {
+        if (r.packageType === 'academic' || r.packageType === 'math' || r.packageType === 'indo' || q.type === 'academic') {
           if (sAns === q.answer) total += (q.weight || 10);
         } else {
           const weights = q.optionWeights && q.optionWeights.length > 0 ? q.optionWeights : [4, 3, 2, 1];
@@ -2173,7 +2173,7 @@ function AdminResults() {
                   {users.find(u => u.id === selectedDetail.userId)?.name || 'Peserta'} ({users.find(u => u.id === selectedDetail.userId)?.class || '-'}) • {packages.find(p => p.id === selectedDetail.packageId)?.title || selectedDetail.packageId}
                 </p>
               </div>
-              <button onClick={() => setSelectedDetail(null)} className="p-2 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 font-bold">✕</button>
+              <button onClick={() => setSelectedDetail(null)} className="p-2 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 font-bold"><X className="w-5 h-5"/></button>
             </div>
 
             {(() => {
